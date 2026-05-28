@@ -1,0 +1,21 @@
+provider: openai
+database_path: data/mailbot.db
+
+gmail:
+  credentials_path: credentials.json
+  token_path: token.json
+  scopes:
+    - https://www.googleapis.com/auth/gmail.modify
+
+queries:
+  unread: is:unread -in:trash
+  important: is:important -in:trash
+  cleanup: is:unread -in:trash
+
+limits:
+  default_list_limit: 10
+  body_preview_chars: 600
+
+providers:
+  openai:
+    model: gpt-5-mini
