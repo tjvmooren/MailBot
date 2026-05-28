@@ -20,16 +20,38 @@ PROTECTED_CATEGORY_REASONS = {
     MailCategory.SECURITY_ACCOUNT: "security/account alert",
 }
 
-DEADLINE_OR_OFFER_RE = re.compile(
-    r"\b(deadline|due by|respond by|interview|offer|next steps|expires?|accept by|"
-    r"scheduled for|appointment|meeting request)\b",
+LOW_RISK_MARKETING_CATEGORIES = {
+    MailCategory.PROMOTIONAL,
+    MailCategory.NEWSLETTER,
+    MailCategory.SOCIAL,
+}
+
+REAL_DEADLINE_OR_OFFER_RE = re.compile(
+    r"\b(interview|application|offer letter|job offer|employment offer|recruiter|"
+    r"professor|assignment|due date|deadline|respond by|response required|accept by|"
+    r"appointment|meeting request|scheduled for)\b",
     re.IGNORECASE,
 )
-ACTION_REQUIRED_RE = re.compile(
-    r"\b(action required|verify|confirm|approve|complete your|submit|review and sign|"
-    r"follow up|urgent|reply needed|please respond)\b",
+REAL_ACTION_REQUIRED_RE = re.compile(
+    r"\b(action required|invoice|bill(?:ing)?|payment required|payment due|payment warning|"
+    r"past due|overdue|account locked|password reset|login attempt|verify your account|"
+    r"verify your identity|tax(?:es)?|legal notice|government notice|insurance|"
+    r"document signature|signature required|review and sign|sign this document|"
+    r"restore your project)\b",
     re.IGNORECASE,
 )
+MARKETING_URGENCY_RE = re.compile(
+    r"\b(limited time offer|sale ends|act now|last chance|don't miss out|deal expires|"
+    r"save today|exclusive offer|order now|shop now)\b",
+    re.IGNORECASE,
+)
+PROTECTED_SENDER_HINT_RE = re.compile(
+    r"\b(recruit(?:er|ing)?|career|application|professor|registrar|admissions|"
+    r"billing|invoice|payment|statement|tax|legal|court|insurance|security|"
+    r"password|login|verify(?:ication)?)\b",
+    re.IGNORECASE,
+)
+PROTECTED_DOMAIN_HINT_RE = re.compile(r"\.(?:edu|gov|mil)\b", re.IGNORECASE)
 
 AUTOMATED_SENDER_MARKERS = (
     "no-reply",
@@ -57,26 +79,26 @@ def evaluate_protection(
 ) -> ProtectionCheck:
     reasons: list[str] = []
     combined_text = message.combined_text
+    has_personal_sender_signal = (
+        classification.sender_type == SenderType.HUMAN_INDIVIDUAL or _looks_human(message)
+    )
+    has_protected_context = _has_protected_context(message, classification)
 
     protected_category_reason = PROTECTED_CATEGORY_REASONS.get(classification.category)
     if protected_category_reason:
         reasons.append(protected_category_reason)
 
-    if classification.sender_type == SenderType.HUMAN_INDIVIDUAL or _looks_human(message):
+    if has_personal_sender_signal:
         reasons.append("personal human email")
 
     if message.has_attachments:
         reasons.append("contains attachment(s)")
 
-    if classification.contains_deadline_or_offer or DEADLINE_OR_OFFER_RE.search(
-        combined_text
-    ):
-        reasons.append("contains deadline/interview/offer language")
+    if _has_real_deadline_or_offer_signal(message, classification, has_protected_context):
+        reasons.append("contains real deadline/interview/application language")
 
-    if classification.contains_action_required_language or ACTION_REQUIRED_RE.search(
-        combined_text
-    ):
-        reasons.append("contains action-required language")
+    if _has_real_action_required_signal(message, classification, has_protected_context):
+        reasons.append("contains real action-required language")
 
     return ProtectionCheck(reasons=_dedupe(reasons))
 
@@ -107,6 +129,62 @@ def _looks_human(message: ParsedMessage) -> bool:
 
     local_part = sender_email.split("@", 1)[0].lower() if "@" in sender_email else ""
     return bool(local_part and EMAIL_NAME_RE.match(local_part))
+
+
+def _has_real_deadline_or_offer_signal(
+    message: ParsedMessage,
+    classification: MessageClassification,
+    has_protected_context: bool,
+) -> bool:
+    if REAL_DEADLINE_OR_OFFER_RE.search(message.combined_text):
+        return True
+    return bool(
+        classification.contains_deadline_or_offer
+        and not _is_low_risk_marketing_urgency(message, classification, has_protected_context)
+    )
+
+
+def _has_real_action_required_signal(
+    message: ParsedMessage,
+    classification: MessageClassification,
+    has_protected_context: bool,
+) -> bool:
+    if REAL_ACTION_REQUIRED_RE.search(message.combined_text):
+        return True
+    return bool(
+        classification.contains_action_required_language
+        and not _is_low_risk_marketing_urgency(message, classification, has_protected_context)
+    )
+
+
+def _is_low_risk_marketing_urgency(
+    message: ParsedMessage,
+    classification: MessageClassification,
+    has_protected_context: bool,
+) -> bool:
+    return (
+        classification.category in LOW_RISK_MARKETING_CATEGORIES
+        and MARKETING_URGENCY_RE.search(message.combined_text) is not None
+        and not has_protected_context
+    )
+
+
+def _has_protected_context(
+    message: ParsedMessage, classification: MessageClassification
+) -> bool:
+    sender_text = f"{message.sender} {message.sender_email}"
+    return any(
+        (
+            classification.category in PROTECTED_CATEGORY_REASONS,
+            classification.sender_type == SenderType.HUMAN_INDIVIDUAL,
+            _looks_human(message),
+            message.has_attachments,
+            REAL_DEADLINE_OR_OFFER_RE.search(message.combined_text) is not None,
+            REAL_ACTION_REQUIRED_RE.search(message.combined_text) is not None,
+            PROTECTED_SENDER_HINT_RE.search(sender_text) is not None,
+            PROTECTED_DOMAIN_HINT_RE.search(message.sender_email) is not None,
+        )
+    )
 
 
 def _dedupe(values: list[str]) -> list[str]:

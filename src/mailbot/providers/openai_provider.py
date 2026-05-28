@@ -17,10 +17,14 @@ Return a structured result using these exact enums:
 
 Be conservative.
 - If the message looks important, personal, financial, legal, educational, employment-related, security-related, or time-sensitive, do not recommend trash.
+- Distinguish real-risk action from marketing urgency.
+- Real-risk signals include interviews, job applications, offer letters, recruiters, professors, assignments, due dates, invoices, bills, payment warnings, account locks, password resets, login attempts, account verification, tax/legal/government/insurance notices, and document-signature requests.
+- Marketing urgency by itself does not make a message important. Phrases such as "limited time offer", "sale ends soon", "act now", "last chance", "deal expires", "save today", "exclusive offer", "order now", and "shop now" should still allow `trash_candidate` when the message is clearly promotional or newsletter content with no protected signals.
 - Prefer review when uncertain.
 - summary should be a short sentence.
 - rationale should be a short sentence.
-- If the message mentions an interview, offer, deadline, or asks the user to take action, mark the related booleans true.
+- Set the booleans true for real deadlines, interviews, applications, offers, or real requests for user action.
+- Do not set those booleans for marketing urgency alone when the email is clearly promotional.
 - Return JSON-compatible values only.
 """.strip()
 
