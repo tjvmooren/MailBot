@@ -44,12 +44,12 @@ class ChatController:
                 self._emit(["Chat ended."])
                 return 0
 
-            result = self.process_message(user_message)
+            result = self.handle_message(user_message)
             self._emit(result.messages)
             if result.exit_requested:
                 return 0
 
-    def process_message(self, user_message: str) -> ChatTurnResult:
+    def handle_message(self, user_message: str) -> ChatTurnResult:
         text = (user_message or "").strip()
         if not text:
             return ChatTurnResult(messages=["What would you like to do?"])
@@ -94,6 +94,10 @@ class ChatController:
         if pending_message:
             result.messages.insert(0, pending_message)
         return result
+
+    def process_message(self, user_message: str) -> ChatTurnResult:
+        """Backward-compatible alias for the transport-neutral message handler."""
+        return self.handle_message(user_message)
 
     def _dispatch_intent(self, intent: ChatIntent) -> ChatTurnResult:
         if intent.intent == ChatIntentName.HELP:

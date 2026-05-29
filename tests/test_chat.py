@@ -132,9 +132,9 @@ def test_chat_controller_requires_exact_trash_confirmation(tmp_path: Path) -> No
         output_fn=lambda _: None,
     )
 
-    preview_result = controller.process_message("trash item 1")
-    yes_result = controller.process_message("yes")
-    execute_result = controller.process_message("TRASH")
+    preview_result = controller.handle_message("trash item 1")
+    yes_result = controller.handle_message("yes")
+    execute_result = controller.handle_message("TRASH")
 
     assert fake_gmail.trashed_ids == ["gmail-123"]
     assert any("type `TRASH`" in message for message in preview_result.messages)

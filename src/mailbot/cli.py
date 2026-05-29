@@ -15,6 +15,8 @@ from .service import (
     TrashExecutionResult,
     TrashPreview,
 )
+from .voice import WindowsSpeechToTextProvider, WindowsTextToSpeechProvider
+from .voice_session import VoiceSession
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -56,6 +58,16 @@ def main(argv: list[str] | None = None) -> int:
             parser = build_chat_intent_parser(config)
             controller = ChatController(service=service, intent_parser=parser)
             return controller.run()
+
+        if args.command == "voice":
+            parser = build_chat_intent_parser(config)
+            controller = ChatController(service=service, intent_parser=parser)
+            session = VoiceSession(
+                controller=controller,
+                speech_to_text=WindowsSpeechToTextProvider(),
+                text_to_speech=WindowsTextToSpeechProvider(),
+            )
+            return session.run()
 
         if args.command == "trash":
             preview = service.prepare_trash(_parse_id_list(args.ids))
@@ -175,6 +187,10 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "chat",
         help="Start an interactive MailBot assistant loop for natural-language requests.",
+    )
+    subparsers.add_parser(
+        "voice",
+        help="Start a minimal Windows voice interface that reuses the MailBot chat controller.",
     )
 
     return parser
