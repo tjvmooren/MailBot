@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from .config import AppConfig
 from .db import SessionStore, StoredSession, StoredSessionResult
+from .exceptions import MailBotError
 from .gmail_client import GmailClient
 from .models import (
     AnalyzedMessage,
@@ -23,6 +24,15 @@ IMPORTANCE_SORT_ORDER = {
     ImportanceLevel.HIGH: 2,
 }
 
+BLOCKED_TRASH_CATEGORIES = {
+    MailCategory.JOB_EMPLOYER.value,
+    MailCategory.SCHOOL_PROFESSOR.value,
+    MailCategory.BANK_FINANCE.value,
+    MailCategory.GOVERNMENT_LEGAL.value,
+    MailCategory.SECURITY_ACCOUNT.value,
+    MailCategory.PERSONAL.value,
+}
+
 
 @dataclass(slots=True)
 class ScanOutput:
@@ -34,13 +44,53 @@ class ScanOutput:
 
 
 @dataclass(slots=True)
+class ReviewOutput:
+    session: StoredSession
+    results: list[StoredSessionResult]
+    filter_name: str | None = None
+
+
+@dataclass(slots=True)
+class TrashBlockedItem:
+    result: StoredSessionResult
+    reasons: list[str]
+
+
+@dataclass(slots=True)
 class TrashPreview:
     session: StoredSession
+    requested_ids: list[int]
     selected: list[StoredSessionResult]
     eligible: list[StoredSessionResult]
-    blocked: list[StoredSessionResult]
+    blocked: list[TrashBlockedItem]
     already_trashed: list[StoredSessionResult]
     missing_ids: list[int]
+
+    @property
+    def requested_count(self) -> int:
+        return len(self.requested_ids)
+
+    @property
+    def eligible_count(self) -> int:
+        return len(self.eligible)
+
+
+@dataclass(slots=True)
+class TrashFailure:
+    display_id: int
+    gmail_message_id: str
+    subject: str
+    stage: str
+    error: str
+
+
+@dataclass(slots=True)
+class TrashExecutionResult:
+    requested_count: int
+    eligible_count: int
+    moved: list[StoredSessionResult]
+    verified: list[StoredSessionResult]
+    failures: list[TrashFailure]
 
 
 class MailBotService:
@@ -92,6 +142,23 @@ class MailBotService:
             actionable=True,
         )
 
+    def review(self, filter_name: str | None = None) -> ReviewOutput:
+        session = self.store.get_latest_actionable_session()
+        if session is None:
+            raise ValueError(
+                "No actionable session found. Run `mailbot cleanup` or `mailbot search` first."
+            )
+
+        results = self.store.get_session_results(session.session_id)
+        filtered_results = [
+            result for result in results if _matches_review_filter(result, filter_name)
+        ]
+        return ReviewOutput(
+            session=session,
+            results=filtered_results,
+            filter_name=filter_name,
+        )
+
     def prepare_trash(self, display_ids: list[int]) -> TrashPreview:
         session = self.store.get_latest_actionable_session()
         if session is None:
@@ -105,11 +172,20 @@ class MailBotService:
         missing_ids = [item_id for item_id in display_ids if item_id not in rows_by_id]
 
         already_trashed = [row for row in selected if row.trashed_at]
-        eligible = [row for row in selected if row.allow_trash and not row.trashed_at]
-        blocked = [row for row in selected if not row.allow_trash and not row.trashed_at]
+        eligible: list[StoredSessionResult] = []
+        blocked: list[TrashBlockedItem] = []
+        for row in selected:
+            if row.trashed_at:
+                continue
+            block_reasons = _trash_block_reasons(row)
+            if block_reasons:
+                blocked.append(TrashBlockedItem(result=row, reasons=block_reasons))
+            else:
+                eligible.append(row)
 
         return TrashPreview(
             session=session,
+            requested_ids=display_ids,
             selected=selected,
             eligible=eligible,
             blocked=blocked,
@@ -117,17 +193,62 @@ class MailBotService:
             missing_ids=missing_ids,
         )
 
-    def move_to_trash(self, preview: TrashPreview) -> list[StoredSessionResult]:
+    def move_to_trash(self, preview: TrashPreview) -> TrashExecutionResult:
         moved: list[StoredSessionResult] = []
+        verified: list[StoredSessionResult] = []
+        failures: list[TrashFailure] = []
+
         for result in preview.eligible:
-            self.gmail.trash_message(result.gmail_message_id)
-            moved.append(result)
+            try:
+                self.gmail.trash_message(result.gmail_message_id)
+                moved.append(result)
+            except MailBotError as exc:
+                failures.append(
+                    TrashFailure(
+                        display_id=result.display_id,
+                        gmail_message_id=result.gmail_message_id,
+                        subject=result.subject,
+                        stage="move",
+                        error=str(exc),
+                    )
+                )
 
         if moved:
             self.store.mark_trashed(
                 preview.session.session_id, [result.display_id for result in moved]
             )
-        return moved
+        for result in moved:
+            try:
+                if self.gmail.message_has_trash_label(result.gmail_message_id):
+                    verified.append(result)
+                else:
+                    failures.append(
+                        TrashFailure(
+                            display_id=result.display_id,
+                            gmail_message_id=result.gmail_message_id,
+                            subject=result.subject,
+                            stage="verify",
+                            error="Message does not have the TRASH label after trash().",
+                        )
+                    )
+            except MailBotError as exc:
+                failures.append(
+                    TrashFailure(
+                        display_id=result.display_id,
+                        gmail_message_id=result.gmail_message_id,
+                        subject=result.subject,
+                        stage="verify",
+                        error=str(exc),
+                    )
+                )
+
+        return TrashExecutionResult(
+            requested_count=preview.requested_count,
+            eligible_count=preview.eligible_count,
+            moved=moved,
+            verified=verified,
+            failures=failures,
+        )
 
     def _scan(
         self, command: str, query: str, limit: int, actionable: bool
@@ -220,3 +341,35 @@ def _fallback_classification(
         summary=summary[:200],
         rationale=(reason or "Manual review is required.")[:300],
     )
+
+
+def _matches_review_filter(
+    result: StoredSessionResult, filter_name: str | None
+) -> bool:
+    if filter_name is None:
+        return True
+    if filter_name == "trash_candidates":
+        return result.final_recommendation == Recommendation.TRASH_CANDIDATE.value
+    if filter_name == "protected":
+        return bool(result.protected_reasons)
+    if filter_name == "review":
+        return result.final_recommendation == Recommendation.REVIEW.value
+    if filter_name == "keep":
+        return result.final_recommendation == Recommendation.KEEP.value
+    raise ValueError(f"Unsupported review filter: {filter_name}")
+
+
+def _trash_block_reasons(result: StoredSessionResult) -> list[str]:
+    reasons: list[str] = []
+    if result.final_recommendation != Recommendation.TRASH_CANDIDATE.value:
+        reasons.append(
+            f"recommendation is {result.final_recommendation.upper()}, not TRASH_CANDIDATE"
+        )
+    if result.category in BLOCKED_TRASH_CATEGORIES:
+        reasons.append(f"protected category: {result.category}")
+    if result.has_attachments:
+        reasons.append("contains attachment(s)")
+    reasons.extend(result.protected_reasons)
+    if not result.allow_trash:
+        reasons.append("stored safety rules did not mark this message safe to trash")
+    return list(dict.fromkeys(reasons))

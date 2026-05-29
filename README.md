@@ -2,7 +2,7 @@
 
 MailBot is a local Python CLI for reviewing Gmail messages with an LLM-assisted safety layer. It authenticates with Gmail OAuth desktop credentials, reads recent messages, classifies them through a provider abstraction, stores local scan sessions in SQLite, and only allows one write action in v1: moving user-approved safe candidates to Gmail trash.
 
-MailBot does not send email, draft replies, or permanently delete messages.
+MailBot does not send email, draft replies, reply to messages, or permanently delete messages.
 
 ## Features
 
@@ -10,10 +10,12 @@ MailBot does not send email, draft replies, or permanently delete messages.
 - `unread --limit N` to review recent unread messages.
 - `important --limit N` to review important messages.
 - `cleanup --limit N` to find likely cleanup candidates and store numbered IDs.
+- `review` to re-display the latest actionable cleanup/search session from SQLite only.
 - `search "gmail query"` to run any Gmail search query and store numbered IDs.
 - `trash --ids 1,2,3` to move approved safe candidates from the latest `cleanup` or `search` session to trash.
 - SQLite-backed session mapping so display IDs remain stable for the latest actionable scan.
 - LLM provider abstraction with OpenAI first, designed so Ollama or Hugging Face can be added later.
+- Direct post-trash verification by Gmail message ID to confirm the moved message now has the `TRASH` label.
 
 ## Safety Rules
 
@@ -26,7 +28,9 @@ MailBot blocks trash recommendations for:
 - security or account alerts
 - personal human emails
 - any email with attachments
-- emails that mention deadlines, interviews, offers, or action-required language
+- emails that contain real deadlines, interviews, applications, invoices, billing warnings, password or login issues, verification requests, legal or government notices, or signature requests
+
+Marketing urgency by itself, such as `limited time offer` or `last chance`, does not block a clearly promotional trash recommendation.
 
 Even if the model suggests trash, the safety layer downgrades protected messages away from trash and `trash --ids ...` refuses to move blocked items.
 
@@ -68,6 +72,17 @@ mailbot auth
 
 This creates `token.json` in the project root. If you later change Gmail scopes, re-run `mailbot auth` and refresh the token.
 
+MailBot uses Gmail read/modify access so it can read messages and move selected safe candidates to Gmail Trash. It does not request Gmail send or compose access.
+
+Do not commit these local files or directories:
+
+- `.env`
+- `credentials.json`
+- `token.json`
+- `data/`
+- `logs/`
+- `.venv/`
+
 ## Commands
 
 ```powershell
@@ -75,11 +90,29 @@ mailbot auth
 mailbot unread --limit 10
 mailbot important --limit 10
 mailbot cleanup --limit 15
+mailbot review
+mailbot review --trash-candidates
 mailbot search "from:linkedin.com is:unread"
 mailbot trash --ids 1,2,3
 ```
 
-`cleanup` and `search` save the latest actionable result set to `data/mailbot.db`. The `trash` command only operates on message IDs from the most recent actionable session and asks for confirmation before moving messages to Gmail trash.
+`cleanup` and `search` save the latest actionable result set to `data/mailbot.db`. The `review` command replays that latest actionable session from SQLite only, without calling Gmail or OpenAI again. The `trash` command only operates on message IDs from the most recent actionable session and asks for confirmation before moving messages to Gmail Trash.
+
+## Example Flow
+
+```powershell
+mailbot unread --limit 5
+mailbot cleanup --limit 10
+mailbot review --trash-candidates
+mailbot trash --ids 3
+mailbot review
+```
+
+`cleanup` is recommendation only. No messages are moved or deleted during cleanup.
+
+`trash` moves selected eligible messages to Gmail Trash only. It does not permanently delete them.
+
+MailBot v1 has no send, draft, or reply functionality.
 
 ## Configuration
 

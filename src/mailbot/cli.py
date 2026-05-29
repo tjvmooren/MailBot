@@ -3,10 +3,16 @@ from __future__ import annotations
 import argparse
 from datetime import datetime
 
-from .config import AppConfig, load_config
+from .config import load_config
 from .exceptions import MailBotError
 from .models import AnalyzedMessage
-from .service import MailBotService, ScanOutput, TrashPreview
+from .service import (
+    MailBotService,
+    ReviewOutput,
+    ScanOutput,
+    TrashExecutionResult,
+    TrashPreview,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -40,20 +46,36 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
 
+        if args.command == "review":
+            _print_review(service.review(filter_name=_selected_review_filter(args)))
+            return 0
+
         if args.command == "trash":
             preview = service.prepare_trash(_parse_id_list(args.ids))
             _print_trash_preview(preview)
             if not preview.eligible:
+                print("No messages were moved. No selected IDs are currently eligible.")
                 return 0
-            if not args.yes:
+            if not _can_skip_trash_confirmation(preview, args.yes):
+                if args.yes:
+                    print(
+                        "--yes did not bypass confirmation because either not every selected "
+                        "ID is eligible or more than 3 IDs were requested."
+                    )
                 confirmation = input(
-                    "Type TRASH to confirm moving the eligible messages to Gmail trash: "
+                    "Type TRASH to confirm moving the eligible messages to Gmail Trash "
+                    "(not permanent deletion): "
                 ).strip()
                 if confirmation != "TRASH":
-                    print("Trash operation cancelled.")
+                    print("Trash operation cancelled. No messages were moved.")
                     return 0
-            moved = service.move_to_trash(preview)
-            print(f"Moved {len(moved)} message(s) to Gmail trash.")
+            else:
+                print(
+                    "Skipping interactive confirmation because every selected ID is eligible "
+                    "and the requested count is 3 or fewer."
+                )
+            result = service.move_to_trash(preview)
+            _print_trash_result(result)
             return 0
 
         parser.error(f"Unknown command: {args.command}")
@@ -105,7 +127,10 @@ def _build_parser() -> argparse.ArgumentParser:
     trash_parser.add_argument(
         "--yes",
         action="store_true",
-        help="Skip the confirmation prompt and trash eligible messages immediately.",
+        help=(
+            "Skip the TRASH prompt only when every selected ID is eligible and the "
+            "requested count is 3 or fewer."
+        ),
     )
 
     search_parser = subparsers.add_parser(
@@ -113,6 +138,32 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     search_parser.add_argument("query", help="A Gmail search query.")
     search_parser.add_argument("--limit", type=int, default=None)
+
+    review_parser = subparsers.add_parser(
+        "review",
+        help="Re-display the latest actionable cleanup/search session from SQLite only.",
+    )
+    review_filters = review_parser.add_mutually_exclusive_group()
+    review_filters.add_argument(
+        "--trash-candidates",
+        action="store_true",
+        help="Show only TRASH_CANDIDATE messages from the latest actionable session.",
+    )
+    review_filters.add_argument(
+        "--protected",
+        action="store_true",
+        help="Show only protected messages from the latest actionable session.",
+    )
+    review_filters.add_argument(
+        "--review",
+        action="store_true",
+        help="Show only REVIEW messages from the latest actionable session.",
+    )
+    review_filters.add_argument(
+        "--keep",
+        action="store_true",
+        help="Show only KEEP messages from the latest actionable session.",
+    )
 
     return parser
 
@@ -143,6 +194,11 @@ def _print_scan(output: ScanOutput) -> None:
         f"{protected} protected message(s), "
         f"{len(output.messages) - trash_candidates} keep/review item(s)."
     )
+    if output.command == "cleanup":
+        print(
+            "Recommendation only. No messages were moved or deleted. "
+            "Run `mailbot trash --ids ...` to move selected eligible messages to Gmail trash."
+        )
     print("")
 
     for display_id, message in enumerate(output.messages, start=1):
@@ -181,6 +237,9 @@ def _print_trash_preview(preview: TrashPreview) -> None:
         f"Latest actionable session: {preview.session.command} "
         f"at {created_at} with query `{preview.session.query}`."
     )
+    print("This moves messages to Gmail Trash only. It does not permanently delete them.")
+    print(f"Requested count: {preview.requested_count}")
+    print(f"Requested IDs: {', '.join(str(item) for item in preview.requested_ids)}")
 
     if preview.missing_ids:
         print(f"Unknown IDs: {', '.join(str(item) for item in preview.missing_ids)}")
@@ -188,8 +247,9 @@ def _print_trash_preview(preview: TrashPreview) -> None:
     if preview.blocked:
         print("Blocked items:")
         for item in preview.blocked:
-            reasons = ", ".join(item.protected_reasons) or item.final_recommendation
-            print(f"  [{item.display_id}] {item.subject} ({reasons})")
+            reasons = "; ".join(item.reasons)
+            print(f"  [{item.result.display_id}] {item.result.subject}")
+            print(f"  Reasons: {reasons}")
 
     if preview.already_trashed:
         print("Already trashed:")
@@ -200,8 +260,61 @@ def _print_trash_preview(preview: TrashPreview) -> None:
         print("Eligible to trash:")
         for item in preview.eligible:
             print(f"  [{item.display_id}] {item.subject} - {item.summary}")
+        print(
+            "Eligible IDs: "
+            f"{', '.join(str(item.display_id) for item in preview.eligible)}"
+        )
     else:
         print("No eligible messages to trash from the requested IDs.")
+    print(f"Eligible count: {preview.eligible_count}")
+    print("Confirmation phrase required: TRASH")
+
+
+def _print_trash_result(result: TrashExecutionResult) -> None:
+    print(f"Requested {result.requested_count} message(s).")
+    print(f"Eligible {result.eligible_count} message(s).")
+    print(f"Moved {len(result.moved)} message(s) to Gmail Trash.")
+    print(f"Verified {len(result.verified)} message(s) now have TRASH label.")
+    if result.failures:
+        print("Failures:")
+        for failure in result.failures:
+            print(
+                f"  [{failure.display_id}] {failure.subject} "
+                f"(gmail_id={failure.gmail_message_id}, stage={failure.stage}): {failure.error}"
+            )
+
+
+def _print_review(output: ReviewOutput) -> None:
+    created_at = _format_timestamp(output.session.created_at)
+    print(f"Session ID: {output.session.session_id}")
+    print(f"Session type: {output.session.command}")
+    print(f"Query: {output.session.query}")
+    print(f"Created: {created_at}")
+    if output.filter_name:
+        print(f"Filter: {output.filter_name}")
+    print(f"Result count: {len(output.results)}")
+    print("")
+
+    if not output.results:
+        print("No messages matched the requested review filter.")
+        return
+
+    for item in output.results:
+        print(
+            f"[{item.display_id}] {item.final_recommendation.upper()} | "
+            f"category={item.category} | importance={item.importance}"
+        )
+        print(f"From: {item.sender}")
+        print(f"Subject: {item.subject}")
+        if item.received_at:
+            print(f"Date: {_format_timestamp(item.received_at)}")
+        print(f"Summary: {item.summary or '(empty)'}")
+        print(f"Rationale: {item.rationale or '(empty)'}")
+        print(
+            "Protected reasons: "
+            f"{', '.join(item.protected_reasons) if item.protected_reasons else 'none'}"
+        )
+        print("")
 
 
 def _parse_id_list(raw_ids: str) -> list[int]:
@@ -224,6 +337,26 @@ def _validated_limit(raw_limit: int | None) -> int | None:
     if raw_limit is not None and raw_limit <= 0:
         raise ValueError("--limit must be a positive integer.")
     return raw_limit
+
+
+def _selected_review_filter(args: argparse.Namespace) -> str | None:
+    if args.trash_candidates:
+        return "trash_candidates"
+    if args.protected:
+        return "protected"
+    if args.review:
+        return "review"
+    if args.keep:
+        return "keep"
+    return None
+
+
+def _can_skip_trash_confirmation(preview: TrashPreview, requested_yes: bool) -> bool:
+    return (
+        requested_yes
+        and preview.requested_count <= 3
+        and preview.eligible_count == preview.requested_count
+    )
 
 
 def _format_timestamp(raw_timestamp: str) -> str:

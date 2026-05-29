@@ -23,10 +23,18 @@ class StoredSessionResult:
     session_id: int
     display_id: int
     gmail_message_id: str
+    sender_email: str
     sender: str
     subject: str
     received_at: str
+    has_attachments: bool
+    attachment_names: list[str]
+    category: str
+    sender_type: str
+    importance: str
+    model_recommendation: str
     summary: str
+    rationale: str
     final_recommendation: str
     protected_reasons: list[str]
     allow_trash: bool
@@ -147,10 +155,18 @@ class SessionStore:
                 session_id,
                 display_id,
                 gmail_message_id,
+                sender_email,
                 sender,
                 subject,
                 received_at,
+                has_attachments,
+                attachment_names,
+                category,
+                sender_type,
+                importance,
+                model_recommendation,
                 summary,
+                rationale,
                 final_recommendation,
                 protected_reasons,
                 allow_trash,
@@ -173,10 +189,18 @@ class SessionStore:
                 session_id=int(row["session_id"]),
                 display_id=int(row["display_id"]),
                 gmail_message_id=str(row["gmail_message_id"]),
+                sender_email=str(row["sender_email"]),
                 sender=str(row["sender"]),
                 subject=str(row["subject"]),
                 received_at=str(row["received_at"]),
+                has_attachments=bool(row["has_attachments"]),
+                attachment_names=json.loads(str(row["attachment_names"])),
+                category=str(row["category"]),
+                sender_type=str(row["sender_type"]),
+                importance=str(row["importance"]),
+                model_recommendation=str(row["model_recommendation"]),
                 summary=str(row["summary"]),
+                rationale=str(row["rationale"]),
                 final_recommendation=str(row["final_recommendation"]),
                 protected_reasons=json.loads(str(row["protected_reasons"])),
                 allow_trash=bool(row["allow_trash"]),

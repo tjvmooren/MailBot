@@ -67,6 +67,22 @@ class GmailClient:
         except HttpError as exc:
             raise MailBotError(f"Unable to move Gmail message to trash: {exc}") from exc
 
+    def message_has_trash_label(self, message_id: str) -> bool:
+        service = self._build_service(interactive=False)
+        try:
+            response = (
+                service.users()
+                .messages()
+                .get(userId="me", id=message_id, format="minimal")
+                .execute()
+            )
+        except HttpError as exc:
+            raise MailBotError(
+                f"Unable to verify Gmail message {message_id} after trash move: {exc}"
+            ) from exc
+        label_ids = set(response.get("labelIds", []) or [])
+        return "TRASH" in label_ids
+
     def _build_service(self, interactive: bool) -> Any:
         credentials = self._load_credentials(interactive=interactive)
         return build("gmail", "v1", credentials=credentials, cache_discovery=False)
