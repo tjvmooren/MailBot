@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
+from typing import Callable
 
 from .config import AppConfig
 from .db import SessionStore, StoredSession, StoredSessionResult
@@ -32,6 +34,7 @@ BLOCKED_TRASH_CATEGORIES = {
     MailCategory.SECURITY_ACCOUNT.value,
     MailCategory.PERSONAL.value,
 }
+VERIFY_TRASH_RETRY_DELAYS_SECONDS = (1.0, 2.0)
 
 
 @dataclass(slots=True)
@@ -94,13 +97,18 @@ class TrashExecutionResult:
 
 
 class MailBotService:
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        verification_sleep: Callable[[float], None] | None = None,
+    ) -> None:
         self.config = config
         self.gmail = GmailClient(config.gmail)
         self.store = SessionStore(config.database_path)
         self._provider: LLMProvider | None = None
         self._provider_error: str | None = None
         self._provider_loaded = False
+        self._verification_sleep = verification_sleep or time.sleep
 
     def authenticate(self) -> str:
         return self.gmail.authenticate()
@@ -219,7 +227,10 @@ class MailBotService:
             )
         for result in moved:
             try:
-                if self.gmail.message_has_trash_label(result.gmail_message_id):
+                verified_in_trash = self._verify_message_in_trash_with_retry(
+                    result.gmail_message_id
+                )
+                if verified_in_trash:
                     verified.append(result)
                 else:
                     failures.append(
@@ -228,7 +239,10 @@ class MailBotService:
                             gmail_message_id=result.gmail_message_id,
                             subject=result.subject,
                             stage="verify",
-                            error="Message does not have the TRASH label after trash().",
+                            error=(
+                                "Message does not have the TRASH label after 3 verification "
+                                "attempts (immediate, +1s, +2s)."
+                            ),
                         )
                     )
             except MailBotError as exc:
@@ -316,6 +330,16 @@ class MailBotService:
             self._provider_error = str(exc)
             self._provider = None
         return self._provider
+
+    def _verify_message_in_trash_with_retry(self, gmail_message_id: str) -> bool:
+        if self.gmail.message_has_trash_label(gmail_message_id):
+            return True
+
+        for delay_seconds in VERIFY_TRASH_RETRY_DELAYS_SECONDS:
+            self._verification_sleep(delay_seconds)
+            if self.gmail.message_has_trash_label(gmail_message_id):
+                return True
+        return False
 
     @staticmethod
     def _cleanup_sort_key(message: AnalyzedMessage) -> tuple[int, int, float]:

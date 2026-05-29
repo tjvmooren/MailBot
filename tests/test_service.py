@@ -27,12 +27,20 @@ class FakeGmailClient:
     def __init__(self) -> None:
         self.trashed_ids: list[str] = []
         self.trash_labels: dict[str, list[str]] = {}
+        self.verification_sequences: dict[str, list[bool]] = {}
+        self.verification_calls: dict[str, int] = {}
 
     def trash_message(self, message_id: str) -> None:
         self.trashed_ids.append(message_id)
         self.trash_labels[message_id] = ["TRASH"]
 
     def message_has_trash_label(self, message_id: str) -> bool:
+        self.verification_calls[message_id] = (
+            self.verification_calls.get(message_id, 0) + 1
+        )
+        sequence = self.verification_sequences.get(message_id)
+        if sequence:
+            return sequence.pop(0)
         return "TRASH" in self.trash_labels.get(message_id, [])
 
 
@@ -165,3 +173,58 @@ def test_move_to_trash_verifies_by_gmail_message_id(tmp_path: Path) -> None:
     assert len(result.verified) == 1
     assert result.failures == []
     assert stored_rows[0].trashed_at is not None
+
+
+def test_move_to_trash_retries_verification_without_sleeping_in_tests(
+    tmp_path: Path,
+) -> None:
+    sleep_calls: list[float] = []
+    service = MailBotService(_config(tmp_path), verification_sleep=sleep_calls.append)
+    fake_gmail = FakeGmailClient()
+    fake_gmail.verification_sequences["gmail-retry"] = [False, False, True]
+    service.gmail = fake_gmail
+
+    retry_message = _analyzed_message(message_id="gmail-retry", subject="Retry promo")
+    service.store.save_session(
+        command="cleanup",
+        query="is:unread -in:trash",
+        results=[retry_message],
+        actionable=True,
+    )
+
+    preview = service.prepare_trash([1])
+    result = service.move_to_trash(preview)
+
+    assert len(result.moved) == 1
+    assert len(result.verified) == 1
+    assert result.failures == []
+    assert sleep_calls == [1.0, 2.0]
+    assert fake_gmail.verification_calls["gmail-retry"] == 3
+
+
+def test_move_to_trash_reports_verification_failure_after_retries(
+    tmp_path: Path,
+) -> None:
+    sleep_calls: list[float] = []
+    service = MailBotService(_config(tmp_path), verification_sleep=sleep_calls.append)
+    fake_gmail = FakeGmailClient()
+    fake_gmail.verification_sequences["gmail-never"] = [False, False, False]
+    service.gmail = fake_gmail
+
+    retry_message = _analyzed_message(message_id="gmail-never", subject="Never verify")
+    service.store.save_session(
+        command="cleanup",
+        query="is:unread -in:trash",
+        results=[retry_message],
+        actionable=True,
+    )
+
+    preview = service.prepare_trash([1])
+    result = service.move_to_trash(preview)
+
+    assert len(result.moved) == 1
+    assert len(result.verified) == 0
+    assert len(result.failures) == 1
+    assert result.failures[0].stage == "verify"
+    assert "after 3 verification attempts" in result.failures[0].error
+    assert sleep_calls == [1.0, 2.0]
