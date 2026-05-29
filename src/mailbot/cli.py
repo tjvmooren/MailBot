@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 from datetime import datetime
 
+from .chat_controller import ChatController
+from .chat_providers import build_chat_intent_parser
 from .config import load_config
 from .exceptions import MailBotError
 from .models import AnalyzedMessage
@@ -49,6 +51,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "review":
             _print_review(service.review(filter_name=_selected_review_filter(args)))
             return 0
+
+        if args.command == "chat":
+            parser = build_chat_intent_parser(config)
+            controller = ChatController(service=service, intent_parser=parser)
+            return controller.run()
 
         if args.command == "trash":
             preview = service.prepare_trash(_parse_id_list(args.ids))
@@ -163,6 +170,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--keep",
         action="store_true",
         help="Show only KEEP messages from the latest actionable session.",
+    )
+
+    subparsers.add_parser(
+        "chat",
+        help="Start an interactive MailBot assistant loop for natural-language requests.",
     )
 
     return parser

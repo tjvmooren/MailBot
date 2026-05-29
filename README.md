@@ -10,6 +10,7 @@ MailBot does not send email, draft replies, reply to messages, or permanently de
 - `unread --limit N` to review recent unread messages.
 - `important --limit N` to review important messages.
 - `cleanup --limit N` to find likely cleanup candidates and store numbered IDs.
+- `chat` to use MailBot in an interactive natural-language assistant loop.
 - `review` to re-display the latest actionable cleanup/search session from SQLite only.
 - `search "gmail query"` to run any Gmail search query and store numbered IDs.
 - `trash --ids 1,2,3` to move approved safe candidates from the latest `cleanup` or `search` session to trash.
@@ -90,6 +91,7 @@ mailbot auth
 mailbot unread --limit 10
 mailbot important --limit 10
 mailbot cleanup --limit 15
+mailbot chat
 mailbot review
 mailbot review --trash-candidates
 mailbot search "from:linkedin.com is:unread"
@@ -97,6 +99,8 @@ mailbot trash --ids 1,2,3
 ```
 
 `cleanup` and `search` save the latest actionable result set to `data/mailbot.db`. The `review` command replays that latest actionable session from SQLite only, without calling Gmail or OpenAI again. The `trash` command only operates on message IDs from the most recent actionable session and asks for confirmation before moving messages to Gmail Trash.
+
+`chat` wraps the same MailBot engine in an interactive assistant loop. It routes natural-language requests such as `show my unread emails`, `find recent Microsoft emails`, `review my latest cleanup results`, and `trash item 3` back into the existing safe service functions.
 
 ## Example Flow
 
