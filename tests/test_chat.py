@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from mailbot.chat_controller import ChatController
+from mailbot.chat_controller import ChatController, ChatResponseMode
 from mailbot.chat_intents import ChatIntentName, ChatReviewFilter
 from mailbot.chat_providers.heuristic_intent_parser import HeuristicChatIntentParser
 from mailbot.config import (
@@ -23,7 +23,7 @@ from mailbot.models import (
     Recommendation,
     SenderType,
 )
-from mailbot.service import MailBotService
+from mailbot.service import MailBotService, ScanOutput
 
 
 class FakeGmailClient:
@@ -35,6 +35,14 @@ class FakeGmailClient:
 
     def message_has_trash_label(self, message_id: str) -> bool:
         return message_id in self.trashed_ids
+
+
+class FakeScanService:
+    def __init__(self, output: ScanOutput) -> None:
+        self.output = output
+
+    def unread(self, limit: int | None = None) -> ScanOutput:
+        return self.output
 
 
 def _config(tmp_path: Path) -> AppConfig:
@@ -144,3 +152,26 @@ def test_chat_controller_requires_exact_trash_confirmation(tmp_path: Path) -> No
         for message in yes_result.messages
     )
     assert any("Moved count: 1" in message for message in execute_result.messages)
+
+
+def test_chat_mode_keeps_full_detailed_output() -> None:
+    output = ScanOutput(
+        command="unread",
+        query="is:unread -in:trash",
+        session_id=None,
+        messages=[_analyzed_message()],
+    )
+    controller = ChatController(
+        service=FakeScanService(output),  # type: ignore[arg-type]
+        intent_parser=HeuristicChatIntentParser(),
+        output_fn=lambda _: None,
+    )
+
+    result = controller.handle_message(
+        "show my unread emails",
+        response_mode=ChatResponseMode.CHAT,
+    )
+
+    assert any("[1] TRASH_CANDIDATE | Deals Bot | Flash sale" in message for message in result.messages)
+    assert any("category=promotional, importance=low" in message for message in result.messages)
+    assert any("summary=Promotional sale email." in message for message in result.messages)

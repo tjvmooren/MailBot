@@ -4,7 +4,7 @@ import re
 import time
 from typing import Callable
 
-from .chat_controller import ChatController
+from .chat_controller import ChatController, ChatResponseMode
 from .voice import (
     KeyboardSpeechPlaybackControl,
     SpeechPlaybackAction,
@@ -68,7 +68,10 @@ class VoiceSession:
 
             normalized_text = _normalize_voice_input(heard_text)
             self._emit([f"You said: {heard_text}"])
-            result = self.controller.handle_message(normalized_text)
+            result = self.controller.handle_message(
+                normalized_text,
+                response_mode=ChatResponseMode.VOICE,
+            )
             self._emit(result.messages)
             _speak_response(
                 self.text_to_speech,
@@ -86,8 +89,11 @@ class VoiceSession:
 
 
 def _normalize_voice_input(recognized_text: str) -> str:
-    if recognized_text.strip().lower() == "trash":
+    normalized = recognized_text.strip().lower()
+    if normalized == "trash":
         return "TRASH"
+    if normalized in {"that's enough", "thats enough"}:
+        return "stop"
     return recognized_text.strip()
 
 

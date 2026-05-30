@@ -108,6 +108,14 @@ mailbot trash --ids 1,2,3
 
 For `voice` to work reliably, Windows microphone access and the local Windows speech engine must be available. If Windows speech recognition or text-to-speech is unavailable, MailBot will fall back to printing a clear error in the terminal instead of taking any Gmail action.
 
+Voice mode keeps spoken results short by default. For larger unread, cleanup, search, or review result sets, MailBot reads a compact summary first, then you can say:
+
+- `details` to hear more
+- `candidates` to hear cleanup candidates
+- `important` to hear important or protected items
+- `next` to continue the current spoken list
+- `stop` to stop expanding the current result set
+
 While MailBot is speaking in `voice` mode, you can press:
 
 - `P` to pause or resume spoken output
